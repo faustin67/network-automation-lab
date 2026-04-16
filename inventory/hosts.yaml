@@ -1,0 +1,194 @@
+---
+# =============================================================================
+# Ansible Inventory — Network Automation Lab
+# =============================================================================
+# Generated from: network_lab_v2.xlsx — Tab: 9_Ansible_Inventory
+# Author:         faustin
+# Lab Platform:   GNS3 + VMware Workstation + Ubuntu 24.04 + FRR
+# Controller:     CTRL — 172.16.100.100
+# Phase:          1 — Campus A Active | Campus B Standby (RAM constraint)
+#
+# Groups:
+#   campus_a    — 5 active devices: A-RTR1, A-RTR2, A-RTR3, A-SW1, A-SW2
+#   campus_b    — 2 powered-off devices: B-RTR1, B-SW1 (configs ready)
+#   management  — CTRL (local) + MGMT-SW (ssh)
+#   active      — Convenience group: all currently reachable devices only
+#
+# Deployment Modes:
+#   Mode 1 — Per device:   ansible-playbook -l A-RTR1 playbooks/deploy_single.yaml
+#   Mode 2 — Per campus:   ansible-playbook -l campus_a playbooks/deploy_campus.yaml
+#   Mode 3 — All devices:  ansible-playbook -l active playbooks/deploy_all.yaml
+#
+# Test connectivity (active devices only):
+#   ansible active -m ping -i inventory/hosts.yaml
+# =============================================================================
+
+all:
+  children:
+
+    # -------------------------------------------------------------------------
+    # Campus A — Primary Site (OSPF Area 0 | VRRP | RSTP)
+    # All devices active. Management via ens33 (172.16.100.x).
+    # -------------------------------------------------------------------------
+    campus_a:
+      vars:
+        site_name: Campus A
+        ospf_area: "0.0.0.0"
+        vrrp_enabled: true
+        stp_mode: rstp
+
+      hosts:
+
+        A-RTR1:
+          ansible_host: 172.16.100.11
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_a
+          device_role: ospf_vrrp_master
+          lab_status: Active
+          # Loopback: 172.16.255.1/32 | VRRP Master priority 110
+          # VRRP VIPs: 172.16.101.254 (Group 1) | 172.16.200.254 (Group 2)
+
+        A-RTR2:
+          ansible_host: 172.16.100.12
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_a
+          device_role: ospf_vrrp_backup
+          lab_status: Active
+          # Loopback: 172.16.255.2/32 | VRRP Backup priority 100
+
+        A-RTR3:
+          ansible_host: 172.16.100.13
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_a
+          device_role: ospf_ce
+          lab_status: Active
+          # Loopback: 172.16.255.3/32 | WAN CE-A: ens35 → 172.16.9.1/30
+
+        A-SW1:
+          ansible_host: 172.16.100.15
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_a
+          device_role: l3_access
+          lab_status: Active
+          # STP Root Bridge VLAN 101+200 (priority 4096) | PC1 downlink ens35
+
+        A-SW2:
+          ansible_host: 172.16.100.16
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_a
+          device_role: l3_access
+          lab_status: Active
+          # STP Non-Root (priority 8192) | No PC — RAM constraint
+
+    # -------------------------------------------------------------------------
+    # Campus B — Standby Site (Powered off — RAM constraint)
+    # Configs fully designed in Excel. Ready to push when resources allow.
+    # To activate: power on B-RTR1 + B-SW1, then run deploy_campus.yaml
+    # -------------------------------------------------------------------------
+    campus_b:
+      vars:
+        site_name: Campus B
+        ospf_area: "0.0.0.0"
+        vrrp_enabled: false       # Single router — no VRRP needed
+        stp_mode: rstp
+
+      hosts:
+
+        B-RTR1:
+          ansible_host: 172.16.100.14
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_b
+          device_role: ospf_ce
+          lab_status: Powered Off
+          # Loopback: 172.16.255.4/32 | WAN CE-B: ens34 → 172.16.9.2/30
+          # VLAN 200 GW: br200 → 172.16.200.5/24 (no VRRP — sole router)
+
+        B-SW1:
+          ansible_host: 172.16.100.17
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: campus_b
+          device_role: l3_access
+          lab_status: Powered Off
+          # STP Root Bridge VLAN 102+200 (priority 4096) | PC3 downlink ens35
+
+    # -------------------------------------------------------------------------
+    # Management — Ansible Controller + Management Switch
+    # CTRL uses ansible_connection: local (runs playbooks on itself)
+    # MGMT-SW is the Layer 2 hub connecting all ens33 management interfaces
+    # -------------------------------------------------------------------------
+    management:
+      vars:
+        site_name: Management
+        vrrp_enabled: false
+
+      hosts:
+
+        CTRL:
+          ansible_host: 172.16.100.100
+          ansible_user: faustin
+          ansible_connection: local    # Controller runs playbooks locally
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: ubuntu
+          campus: management
+          device_role: controller
+          lab_status: Active
+          # Bond: ens33+ens37 active-backup → bond0
+          # Shared services reserved: DNS .10 | NTP .11 | Syslog .12 | AI .13
+
+        MGMT-SW:
+          ansible_host: 172.16.100.1
+          ansible_user: faustin
+          ansible_connection: ssh
+          ansible_become: true
+          ansible_become_method: sudo
+          os_type: frr_linux
+          campus: management
+          device_role: mgmt_switch
+          lab_status: Active
+          # L2 hub — all devices connect ens33 → MGMT-SW for OOB management
+
+    # -------------------------------------------------------------------------
+    # active — Convenience group: currently powered-on and reachable devices
+    # Use this group for safe playbook runs that skip Campus B
+    # ansible active -m ping -i inventory/hosts.yaml
+    # -------------------------------------------------------------------------
+    active:
+      vars:
+        lab_status: Active
+      hosts:
+        A-RTR1:
+        A-RTR2:
+        A-RTR3:
+        A-SW1:
+        A-SW2:
+        CTRL:
+        MGMT-SW:

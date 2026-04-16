@@ -1,0 +1,124 @@
+---
+# deploy_netplan.yaml — Push Netplan interface configuration to all devices
+#
+# ALWAYS run this first — Netplan must be applied before FRR.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy_netplan.yaml -i inventory/hosts.yaml
+#   ansible-playbook playbooks/deploy_netplan.yaml -i inventory/hosts.yaml --limit A-RTR1
+#   ansible-playbook playbooks/deploy_netplan.yaml -i inventory/hosts.yaml --limit campus_a
+
+# ============================================================
+# PLAY 1 — Routers
+# ============================================================
+- name: "Deploy Netplan | Routers"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-router devices
+      meta: end_host
+      when: device_role not in ['ospf_vrrp_master', 'ospf_vrrp_backup', 'ospf_ce']
+
+  tasks:
+
+    - name: Render netplan_router.j2 and deploy to device
+      template:
+        src: /home/faustin/ansible-project/templates/netplan_router.j2
+        dest: /etc/netplan/99-lab.yaml
+        owner: root
+        group: root
+        mode: '0600'
+      become: true
+      register: netplan_changed
+
+    - name: Apply Netplan
+      command: netplan apply
+      become: true
+      when: netplan_changed.changed
+
+    - name: Verify management interface is still up
+      command: "ip addr show {{ mgmt_interface }}"
+      register: mgmt_check
+      changed_when: false
+
+    - name: Report interface status
+      debug:
+        msg: "{{ inventory_hostname }} — {{ mgmt_interface }} is UP"
+      when: mgmt_check.rc == 0
+
+
+# ============================================================
+# PLAY 2 — Switches
+# ============================================================
+- name: "Deploy Netplan | Switches"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-switch devices
+      meta: end_host
+      when: device_role not in ['l3_access', 'mgmt_switch']
+
+  tasks:
+
+    - name: Render netplan_switch.j2 and deploy to device
+      template:
+        src: /home/faustin/ansible-project/templates/netplan_switch.j2
+        dest: /etc/netplan/99-lab.yaml
+        owner: root
+        group: root
+        mode: '0600'
+      become: true
+      register: netplan_changed
+
+    - name: Apply Netplan
+      command: netplan apply
+      become: true
+      when: netplan_changed.changed
+
+    - name: Verify management interface is still up
+      command: "ip addr show {{ mgmt_interface }}"
+      register: mgmt_check
+      changed_when: false
+
+    - name: Report interface status
+      debug:
+        msg: "{{ inventory_hostname }} — {{ mgmt_interface }} is UP"
+      when: mgmt_check.rc == 0
+
+
+# ============================================================
+# PLAY 3 — Verification
+# ============================================================
+- name: "Deploy Netplan | Verify all interfaces"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip CTRL
+      meta: end_host
+      when: device_role == 'controller'
+
+  tasks:
+
+    - name: Show assigned IP addresses
+      command: ip addr show
+      register: ip_output
+      changed_when: false
+
+    - name: Report IP summary
+      debug:
+        msg: "{{ inventory_hostname }} — interfaces verified OK"

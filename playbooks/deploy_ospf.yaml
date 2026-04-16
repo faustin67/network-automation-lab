@@ -1,0 +1,109 @@
+---
+# deploy_ospf.yaml — Push FRR OSPF configuration to all routers
+#
+# Run AFTER deploy_netplan.yaml — OSPF needs interfaces and IPs to exist first.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy_ospf.yaml -i inventory/hosts.yaml
+#   ansible-playbook playbooks/deploy_ospf.yaml -i inventory/hosts.yaml --limit A-RTR1
+#   ansible-playbook playbooks/deploy_ospf.yaml -i inventory/hosts.yaml --limit campus_a
+
+- name: "Deploy OSPF | Push FRR OSPF config to routers"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip devices without OSPF config (switches, CTRL)
+      meta: end_host
+      when: ospf is not defined
+
+  tasks:
+    - name: Render frr_ospf.j2 and deploy to device
+      template:
+        src: /home/faustin/ansible-project/templates/frr_ospf.j2
+        dest: /etc/frr/ospfd.conf
+        owner: frr
+        group: frr
+        mode: '0640'
+      become: true
+      register: ospf_changed
+      notify: Restart FRR
+
+    - name: Confirm ospfd is enabled in daemons file
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^ospfd='
+        line: 'ospfd=yes'
+      become: true
+      notify: Restart FRR
+
+    - name: Force FRR restart if config changed
+      meta: flush_handlers
+
+    - name: Wait for OSPF to initialise
+      pause:
+        seconds: 5
+
+    - name: Verify OSPF process is running
+      command: vtysh -c "show ip ospf"
+      register: ospf_check
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report OSPF process status
+      debug:
+        msg: "OSPF on {{ inventory_hostname }}: {{ 'OK — process running' if ospf_check.rc == 0 else 'FAILED — check /etc/frr/ospfd.conf' }}"
+
+  handlers:
+    - name: Restart FRR
+      systemd:
+        name: frr
+        state: restarted
+      become: true
+
+
+- name: "Deploy OSPF | Verify neighbour relationships"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-routers
+      meta: end_host
+      when: ospf is not defined
+
+  tasks:
+    - name: Wait for OSPF neighbours to establish
+      pause:
+        seconds: 15
+      run_once: true
+
+    - name: Show OSPF neighbour table
+      command: vtysh -c "show ip ospf neighbor"
+      register: ospf_neighbors
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report OSPF neighbours
+      debug:
+        msg: "{{ inventory_hostname }} OSPF neighbours:\n{{ ospf_neighbors.stdout }}"
+
+    - name: Show OSPF routes learned
+      command: vtysh -c "show ip route ospf"
+      register: ospf_routes
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report OSPF routes
+      debug:
+        msg: "{{ inventory_hostname }} OSPF routes:\n{{ ospf_routes.stdout }}"

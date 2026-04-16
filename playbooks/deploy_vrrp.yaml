@@ -1,0 +1,102 @@
+---
+# deploy_vrrp.yaml — Push FRR VRRP configuration to A-RTR1 and A-RTR2
+#
+# Run AFTER deploy_netplan.yaml and deploy_ospf.yaml.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy_vrrp.yaml -i inventory/hosts.yaml
+#   ansible-playbook playbooks/deploy_vrrp.yaml -i inventory/hosts.yaml --limit A-RTR1
+
+- name: "Deploy VRRP | Push FRR VRRP config"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip devices without VRRP config
+      meta: end_host
+      when: vrrp is not defined
+
+  tasks:
+    - name: Render frr_vrrp.j2 and deploy to device
+      template:
+        src: /home/faustin/ansible-project/templates/frr_vrrp.j2
+        dest: /etc/frr/vrrpd.conf
+        owner: frr
+        group: frr
+        mode: '0640'
+      become: true
+      register: vrrp_changed
+      notify: Restart FRR
+
+    - name: Confirm vrrpd is enabled in daemons file
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^vrrpd='
+        line: 'vrrpd=yes'
+      become: true
+      notify: Restart FRR
+
+    - name: Force FRR restart if config changed
+      meta: flush_handlers
+
+    - name: Wait for VRRP election to complete
+      pause:
+        seconds: 5
+
+    - name: Verify VRRP is running
+      command: vtysh -c "show vrrp"
+      register: vrrp_check
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report VRRP status
+      debug:
+        msg: "VRRP on {{ inventory_hostname }}: {{ 'OK' if vrrp_check.rc == 0 else 'FAILED — check /etc/frr/vrrpd.conf' }}"
+
+  handlers:
+    - name: Restart FRR
+      systemd:
+        name: frr
+        state: restarted
+      become: true
+
+
+- name: "Deploy VRRP | Verify master/backup election"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-VRRP devices
+      meta: end_host
+      when: vrrp is not defined
+
+  tasks:
+    - name: Show full VRRP state
+      command: vtysh -c "show vrrp"
+      register: vrrp_state
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report VRRP election result
+      debug:
+        msg: "{{ inventory_hostname }} VRRP state:\n{{ vrrp_state.stdout }}"
+
+    - name: Verify Virtual IP is present on Master
+      command: "ip addr show | grep 172.16.101.254"
+      register: vip_check
+      changed_when: false
+      failed_when: false
+
+    - name: Report Virtual IP ownership
+      debug:
+        msg: "{{ inventory_hostname }}: {{ 'VRRP MASTER — owns VIP 172.16.101.254' if vip_check.rc == 0 else 'VRRP BACKUP — not holding VIP (correct if this is RTR2)' }}"

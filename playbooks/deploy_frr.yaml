@@ -1,0 +1,148 @@
+---
+# deploy_frr.yaml — Push combined FRR config (OSPF + VRRP) to all routers
+#
+# Replaces deploy_ospf.yaml and deploy_vrrp.yaml.
+# Writes to /etc/frr/frr.conf (integrated config mode).
+#
+# Run AFTER deploy_netplan.yaml — interfaces must exist first.
+#
+# Usage:
+#   ansible-playbook playbooks/deploy_frr.yaml -i inventory/hosts.yaml
+#   ansible-playbook playbooks/deploy_frr.yaml -i inventory/hosts.yaml --limit A-RTR1
+#   ansible-playbook playbooks/deploy_frr.yaml -i inventory/hosts.yaml --limit campus_a
+
+- name: "Deploy FRR | Push OSPF + VRRP config to routers"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip devices without OSPF config (switches, CTRL)
+      meta: end_host
+      when: ospf is not defined
+
+  tasks:
+
+    - name: Render frr.j2 and deploy to /etc/frr/frr.conf
+      template:
+        src: /home/faustin/ansible-project/templates/frr.j2
+        dest: /etc/frr/frr.conf
+        owner: frr
+        group: frr
+        mode: '0640'
+      become: true
+      register: frr_changed
+      notify: Restart FRR
+
+    - name: Confirm ospfd is enabled in daemons file
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^ospfd='
+        line: 'ospfd=yes'
+      become: true
+      notify: Restart FRR
+
+    - name: Confirm vrrpd is enabled on VRRP routers
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^vrrpd='
+        line: 'vrrpd=yes'
+      become: true
+      notify: Restart FRR
+      when: device_role in ['ospf_vrrp_master', 'ospf_vrrp_backup']
+
+    - name: Force FRR restart if config changed
+      meta: flush_handlers
+
+    - name: Wait for FRR to initialise
+      pause:
+        seconds: 10
+
+    - name: Verify OSPF process is running
+      command: vtysh -c "show ip ospf"
+      register: ospf_check
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report OSPF status
+      debug:
+        msg: "OSPF on {{ inventory_hostname }}: {{ 'OK — process running' if ospf_check.rc == 0 else 'FAILED — check /etc/frr/frr.conf' }}"
+
+  handlers:
+    - name: Restart FRR
+      systemd:
+        name: frr
+        state: restarted
+      become: true
+
+
+- name: "Deploy FRR | Verify OSPF neighbours and VRRP"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-routers
+      meta: end_host
+      when: ospf is not defined
+
+  tasks:
+
+    - name: Wait for OSPF neighbours to establish
+      pause:
+        seconds: 15
+      run_once: true
+
+    - name: Show OSPF neighbour table
+      command: vtysh -c "show ip ospf neighbor"
+      register: ospf_neighbors
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report OSPF neighbours
+      debug:
+        msg: "{{ inventory_hostname }} OSPF neighbours:\n{{ ospf_neighbors.stdout }}"
+
+    - name: Show OSPF routes
+      command: vtysh -c "show ip route ospf"
+      register: ospf_routes
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report OSPF routes
+      debug:
+        msg: "{{ inventory_hostname }} OSPF routes:\n{{ ospf_routes.stdout }}"
+
+    - name: Show VRRP state
+      command: vtysh -c "show vrrp"
+      register: vrrp_state
+      changed_when: false
+      failed_when: false
+      become: true
+      when: vrrp is defined
+
+    - name: Report VRRP state
+      debug:
+        msg: "{{ inventory_hostname }} VRRP:\n{{ vrrp_state.stdout }}"
+      when: vrrp is defined
+
+    - name: Check Virtual IP ownership
+      command: "ip addr show vrrp4-2 | grep 172.16.200.254"
+      register: vip_check
+      changed_when: false
+      failed_when: false
+      when: vrrp is defined
+
+    - name: Report VIP ownership
+      debug:
+        msg: "{{ inventory_hostname }}: {{ 'VRRP MASTER — owns VIP 172.16.200.254' if vip_check.rc == 0 else 'VRRP BACKUP — not holding VIP' }}"
+      when: vrrp is defined

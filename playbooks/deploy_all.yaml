@@ -1,0 +1,217 @@
+---
+# deploy_all.yaml — Mode 3: Full lab configuration push
+#
+# WARNING — This pushes ALL configs to ALL active devices
+# Type YES-ALL-SITES to confirm
+#
+# Usage:
+#   ansible-playbook playbooks/deploy_all.yaml -i inventory/hosts.yaml
+
+- name: "Deploy All | Safety confirmation"
+  hosts: localhost
+  gather_facts: false
+
+  vars_prompt:
+    - name: confirm
+      prompt: |
+
+        +================================================+
+        |  WARNING: FULL LAB CONFIGURATION PUSH         |
+        |  This will push configs to ALL active devices  |
+        |  Netplan + OSPF + VRRP in sequence             |
+        |                                                |
+        |  Type  YES-ALL-SITES  to confirm               |
+        +================================================+
+      private: false
+
+  tasks:
+    - name: Abort if not confirmed
+      fail:
+        msg: "Deployment cancelled — you must type YES-ALL-SITES to proceed"
+      when: confirm != "YES-ALL-SITES"
+
+    - name: Confirmed — proceeding with full lab push
+      debug:
+        msg: "Confirmed — pushing Netplan + OSPF + VRRP to all active devices"
+
+
+- name: "Deploy All | Netplan — routers"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-routers
+      meta: end_host
+      when: device_role not in ['ospf_vrrp_master', 'ospf_vrrp_backup', 'ospf_ce']
+
+  tasks:
+    - name: Render and push netplan_router.j2
+      template:
+        src: /home/faustin/ansible-project/templates/netplan_router.j2
+        dest: /etc/netplan/99-lab.yaml
+        owner: root
+        group: root
+        mode: '0600'
+      become: true
+      notify: Apply Netplan
+
+    - name: Force Netplan apply
+      meta: flush_handlers
+
+  handlers:
+    - name: Apply Netplan
+      command: netplan apply
+      become: true
+
+
+- name: "Deploy All | Netplan — switches"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip non-switches
+      meta: end_host
+      when: device_role not in ['l3_access', 'mgmt_switch']
+
+  tasks:
+    - name: Render and push netplan_switch.j2
+      template:
+        src: /home/faustin/ansible-project/templates/netplan_switch.j2
+        dest: /etc/netplan/99-lab.yaml
+        owner: root
+        group: root
+        mode: '0600'
+      become: true
+      notify: Apply Netplan
+
+    - name: Force Netplan apply
+      meta: flush_handlers
+
+  handlers:
+    - name: Apply Netplan
+      command: netplan apply
+      become: true
+
+
+- name: "Deploy All | OSPF config"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip devices without OSPF config
+      meta: end_host
+      when: ospf is not defined
+
+  tasks:
+    - name: Render and push frr_ospf.j2
+      template:
+        src: /home/faustin/ansible-project/templates/frr_ospf.j2
+        dest: /etc/frr/ospfd.conf
+        owner: frr
+        group: frr
+        mode: '0640'
+      become: true
+      notify: Restart FRR
+
+    - name: Force FRR restart
+      meta: flush_handlers
+
+    - name: Wait for OSPF to initialise
+      pause:
+        seconds: 10
+
+  handlers:
+    - name: Restart FRR
+      systemd:
+        name: frr
+        state: restarted
+      become: true
+
+
+- name: "Deploy All | VRRP config"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip devices without VRRP config
+      meta: end_host
+      when: vrrp is not defined
+
+  tasks:
+    - name: Render and push frr_vrrp.j2
+      template:
+        src: /home/faustin/ansible-project/templates/frr_vrrp.j2
+        dest: /etc/frr/vrrpd.conf
+        owner: frr
+        group: frr
+        mode: '0640'
+      become: true
+      notify: Restart FRR
+
+    - name: Force FRR restart
+      meta: flush_handlers
+
+    - name: Wait for VRRP election
+      pause:
+        seconds: 5
+
+  handlers:
+    - name: Restart FRR
+      systemd:
+        name: frr
+        state: restarted
+      become: true
+
+
+- name: "Deploy All | Final verification"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+    - name: Skip CTRL
+      meta: end_host
+      when: device_role == 'controller'
+
+  tasks:
+    - name: Check OSPF neighbours
+      command: vtysh -c "show ip ospf neighbor"
+      register: ospf_check
+      changed_when: false
+      failed_when: false
+      become: true
+      when: ospf is defined
+
+    - name: Check VRRP state
+      command: vtysh -c "show vrrp"
+      register: vrrp_check
+      changed_when: false
+      failed_when: false
+      become: true
+      when: vrrp is defined
+
+    - name: Final summary
+      debug:
+        msg: >
+          {{ inventory_hostname }} ({{ device_role }}) —
+          OSPF={{ 'OK' if (ospf is defined and ospf_check.rc == 0) else ('N/A' if ospf is not defined else 'CHECK') }} |
+          VRRP={{ 'OK' if (vrrp is defined and vrrp_check.rc == 0) else ('N/A' if vrrp is not defined else 'CHECK') }}

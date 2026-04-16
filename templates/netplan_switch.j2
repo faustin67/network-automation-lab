@@ -1,0 +1,48 @@
+{# netplan_switch.j2 — Netplan config for L3 access switches (A-SW1, A-SW2, B-SW1) #}
+network:
+  version: 2
+  renderer: networkd
+
+  ethernets:
+{% for iface, cfg in interfaces.items() if cfg.type == 'ethernet' %}
+    {{ iface }}:
+      dhcp4: false
+{% if cfg.addresses is defined %}
+      addresses:
+{% for addr in cfg.addresses %}
+        - {{ addr }}
+{% endfor %}
+{% endif %}
+{% if cfg.routes is defined %}
+      routes:
+{% for route in cfg.routes %}
+        - to: {{ route.to }}
+          via: {{ route.via }}
+{% endfor %}
+{% endif %}
+{% if cfg.nameservers is defined %}
+      nameservers:
+        addresses: {{ cfg.nameservers.addresses | to_yaml | trim }}
+{% endif %}
+{% endfor %}
+
+{% set bridge_ifaces = interfaces | dict2items | selectattr('value.type', 'eq', 'bridge') | list %}
+{% if bridge_ifaces %}
+  bridges:
+{% for item in bridge_ifaces %}
+    {{ item.key }}:
+      dhcp4: false
+{% if item.value.interfaces is defined %}
+      interfaces: {{ item.value.interfaces | to_yaml | trim }}
+{% endif %}
+{% if item.value.addresses is defined %}
+      addresses:
+{% for addr in item.value.addresses %}
+        - {{ addr }}
+{% endfor %}
+{% endif %}
+      parameters:
+        stp: false
+{% endfor %}
+{% endif %}
+

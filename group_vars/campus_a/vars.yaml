@@ -1,0 +1,39 @@
+---
+# Campus A — Group Variables
+# Mode 2 deployment scope: all Campus A devices share these values
+
+campus: campus_a
+site_name: "Campus A"
+site_status: active
+
+# Management
+mgmt_vlan: 100
+mgmt_network: "172.16.100.0/24"
+mgmt_gateway: "172.16.100.1"
+
+# OSPF
+ospf_area: "0.0.0.0"
+ospf_hello_interval: 10
+ospf_dead_interval: 40
+ospf_reference_bandwidth: 100
+
+# VLAN definitions for this campus
+vlans:
+  - id: 100
+    name: Management
+    subnet: "172.16.100.0/24"
+    gateway: "172.16.100.1"
+  - id: 101
+    name: Users-A
+    subnet: "172.16.101.0/24"
+    gateway: "172.16.101.1"
+  - id: 200
+    name: Shared-Data
+    subnet: "172.16.200.0/24"
+    vrrp_vip: "172.16.200.254"
+
+# DNS / NTP / Syslog (shared services on CTRL)
+dns_server: "172.16.200.10"
+ntp_server: "172.16.200.11"
+syslog_server: "172.16.200.12"
+

@@ -1,0 +1,256 @@
+---
+# preflight.yaml — Pre-flight verification playbook
+#
+# No internet access required — this playbook does NOT install packages.
+# It assumes FRR, chrony and other tools are already installed on the VMs.
+# It verifies daemons are running, enables them if not, and configures
+# FRR daemons file and IP forwarding.
+#
+# Usage:
+#   ansible-playbook playbooks/preflight.yaml -i inventory/hosts.yaml
+#   ansible-playbook playbooks/preflight.yaml -i inventory/hosts.yaml --limit campus_a
+#   ansible-playbook playbooks/preflight.yaml -i inventory/hosts.yaml --limit A-RTR1
+
+# ============================================================
+# PLAY 1 — All devices (common baseline)
+# ============================================================
+- name: "Pre-flight | Common baseline — all devices"
+  hosts: all
+  gather_facts: true
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+  tasks:
+
+    - name: Confirm device is reachable and Python is available
+      ping:
+
+    - name: Enable systemd-networkd
+      systemd:
+        name: systemd-networkd
+        enabled: true
+        state: started
+      become: true
+
+    - name: Enable systemd-resolved
+      systemd:
+        name: systemd-resolved
+        enabled: true
+        state: started
+      become: true
+
+    - name: Enable IPv4 forwarding (sysctl)
+      sysctl:
+        name: net.ipv4.ip_forward
+        value: '1'
+        state: present
+        reload: true
+      become: true
+      when: os_type == 'frr_linux'
+
+    - name: Persist IP forwarding across reboots
+      lineinfile:
+        path: /etc/sysctl.d/99-lab-forwarding.conf
+        line: "net.ipv4.ip_forward = 1"
+        create: true
+        owner: root
+        group: root
+        mode: '0644'
+      become: true
+      when: os_type == 'frr_linux'
+
+    - name: Check chrony is installed
+      command: which chronyc
+      register: chrony_check
+      changed_when: false
+      failed_when: false
+
+    - name: Enable and start chrony if installed
+      systemd:
+        name: chrony
+        enabled: true
+        state: started
+      become: true
+      when: chrony_check.rc == 0
+
+    - name: Report chrony status
+      debug:
+        msg: "chrony on {{ inventory_hostname }}: {{ 'OK' if chrony_check.rc == 0 else 'NOT FOUND — install manually when internet available' }}"
+
+
+# ============================================================
+# PLAY 2 — FRR devices (routers + switches — not CTRL)
+# ============================================================
+- name: "Pre-flight | FRR daemon — routers and switches"
+  hosts: campus_a:campus_b
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+  tasks:
+
+    - name: Check FRR is installed
+      command: which vtysh
+      register: frr_check
+      changed_when: false
+      failed_when: false
+
+    - name: Fail clearly if FRR is not installed
+      fail:
+        msg: "FRR is NOT installed on {{ inventory_hostname }}. Install manually: sudo apt install frr frr-pythontools"
+      when: frr_check.rc != 0
+
+    - name: Enable ospfd in FRR daemons file
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^ospfd='
+        line: 'ospfd=yes'
+        backup: true
+      become: true
+      notify: Restart FRR
+
+    - name: Enable vrrpd on VRRP routers only
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^vrrpd='
+        line: 'vrrpd=yes'
+        backup: true
+      become: true
+      notify: Restart FRR
+      when: device_role in ['ospf_vrrp_master', 'ospf_vrrp_backup']
+
+    - name: Disable bgpd (Phase 2 — not yet)
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^bgpd='
+        line: 'bgpd=no'
+      become: true
+
+    - name: Disable ldpd (Phase 2 MPLS — not yet)
+      lineinfile:
+        path: /etc/frr/daemons
+        regexp: '^ldpd='
+        line: 'ldpd=no'
+      become: true
+
+    - name: Enable FRR to start on boot
+      systemd:
+        name: frr
+        enabled: true
+      become: true
+
+    - name: Start FRR if not already running
+      systemd:
+        name: frr
+        state: started
+      become: true
+      failed_when: false
+
+    - name: Verify FRR is running
+      command: vtysh -c "show version"
+      register: frr_version
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report FRR status
+      debug:
+        msg: "FRR on {{ inventory_hostname }}: {{ 'OK — ' + (frr_version.stdout_lines[0] | default('running')) if frr_version.rc == 0 else 'NOT RUNNING — check /etc/frr/daemons' }}"
+
+    - name: Confirm ospfd is responding
+      command: vtysh -c "show ip ospf"
+      register: ospfd_check
+      changed_when: false
+      failed_when: false
+      become: true
+
+    - name: Report ospfd status
+      debug:
+        msg: "ospfd on {{ inventory_hostname }}: {{ 'OK' if ospfd_check.rc == 0 else 'NOT RESPONDING — may need config push first' }}"
+
+  handlers:
+    - name: Restart FRR
+      systemd:
+        name: frr
+        state: restarted
+      become: true
+
+
+# ============================================================
+# PLAY 3 — CTRL only
+# ============================================================
+- name: "Pre-flight | CTRL controller baseline"
+  hosts: management
+  gather_facts: false
+
+  pre_tasks:
+    - name: Run only on CTRL
+      meta: end_host
+      when: device_role != 'controller'
+
+  tasks:
+
+    - name: Verify Ansible version
+      command: ansible --version
+      register: ansible_ver
+      changed_when: false
+
+    - name: Report Ansible version
+      debug:
+        msg: "{{ ansible_ver.stdout_lines[0] }}"
+
+    - name: Check Python libraries are available
+      command: python3 -c "import openpyxl, pandas, jinja2; print('OK')"
+      register: py_check
+      changed_when: false
+      failed_when: false
+
+    - name: Report Python library status
+      debug:
+        msg: "Python libraries on CTRL: {{ 'openpyxl + pandas + jinja2 all OK' if py_check.rc == 0 else 'MISSING — ' + py_check.stderr }}"
+
+    - name: Verify SSH key is present
+      stat:
+        path: "/home/{{ ansible_user }}/.ssh/id_rsa"
+      register: ssh_key
+
+    - name: Report SSH key status
+      debug:
+        msg: "SSH key: {{ 'OK — found at ~/.ssh/id_rsa' if ssh_key.stat.exists else 'WARNING — not found, Ansible using password auth' }}"
+
+
+# ============================================================
+# PLAY 4 — Final summary across all active devices
+# ============================================================
+- name: "Pre-flight | Summary report"
+  hosts: all
+  gather_facts: false
+
+  pre_tasks:
+    - name: Skip powered-off devices
+      meta: end_host
+      when: hostvars[inventory_hostname].status is defined and hostvars[inventory_hostname].status == 'powered_off'
+
+  tasks:
+    - name: Collect service states
+      systemd:
+        name: "{{ item }}"
+      loop:
+        - systemd-networkd
+        - frr
+      register: service_states
+      failed_when: false
+      become: true
+
+    - name: Print summary
+      debug:
+        msg: >
+          {{ inventory_hostname }} ({{ device_role }}) |
+          networkd={{ service_states.results[0].status.ActiveState | default('n/a') }} |
+          frr={{ service_states.results[1].status.ActiveState | default('n/a') }}

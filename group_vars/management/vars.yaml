@@ -1,0 +1,12 @@
+---
+# Management Group — Group Variables
+# Applies to: CTRL, MGMT-SW
+
+campus: management
+site_name: "Management"
+site_status: active
+
+mgmt_vlan: 100
+mgmt_network: "172.16.100.0/24"
+mgmt_gateway: "172.16.100.1"
+

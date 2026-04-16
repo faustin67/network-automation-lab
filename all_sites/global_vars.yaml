@@ -1,0 +1,39 @@
+---
+# ============================================================
+# ⚠  WARNING — GLOBAL VARIABLES — ALL SITES  ⚠
+# Changes here affect EVERY device in the lab.
+# Use Mode 3 deploy_all.yaml only with deliberate intent.
+# ============================================================
+
+# Ansible connection defaults
+ansible_user: faustin
+ansible_become: true
+ansible_become_method: sudo
+
+# OS / platform
+os_type: frr_linux
+os_version: "Ubuntu 24.04"
+routing_daemon: frr
+
+# Lab-wide management
+mgmt_vlan: 100
+mgmt_network: "172.16.100.0/24"
+mgmt_gateway: "172.16.100.1"
+
+# OSPF global defaults
+ospf_process_id: 1
+ospf_area: "0.0.0.0"
+ospf_hello_interval: 10
+ospf_dead_interval: 40
+ospf_reference_bandwidth: 100
+
+# Shared services (on CTRL, VLAN 200)
+dns_server: "172.16.200.10"
+ntp_server: "172.16.200.11"
+syslog_server: "172.16.200.12"
+ai_monitor: "172.16.200.13"
+dhcp_server: "172.16.200.14"
+
+# Netplan renderer
+netplan_renderer: networkd
+
